@@ -1,4 +1,4 @@
-import { FunctionDeclaration, Type } from '@google/genai';
+import { Type, type FunctionDeclaration } from '@google/genai';
 import type { Assistant } from '../../src/types.ts';
 
 export const VOICE_TOOL_DECLARATIONS: FunctionDeclaration[] = [

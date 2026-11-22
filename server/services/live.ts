@@ -1,5 +1,5 @@
 import type { IncomingMessage } from 'node:http';
-import { LiveServerMessage, Modality } from '@google/genai';
+import { Modality, type LiveServerMessage } from '@google/genai';
 import { WebSocket, WebSocketServer } from 'ws';
 import { MODEL_CONFIG } from '../config/models.ts';
 import type { Appointment } from '../../src/types.ts';
