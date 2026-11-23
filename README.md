@@ -2,7 +2,7 @@
 
 Fedora-Pilot is a Vapi-style voice AI agent platform prototype built with React, TypeScript, Tailwind CSS, and a Node/Express + WebSocket backend powered by the `@google/genai` SDK.
 
-Users can configure voice assistants, upload and embed company knowledge, place realistic phone calls in the Dialer UI (supporting both **Pipeline Mode** and **Realtime Gemini Live Mode**), interrupt the agent mid-sentence (barge-in), inspect per-turn latency metrics, and review AI-summarized call logs.
+Users can configure voice assistants, upload and embed company knowledge, place realistic phone calls in the Dialer UI (supporting both **Pipeline Mode** and **Realtime Fedora Pilot Mode**), interrupt the agent mid-sentence (barge-in), inspect per-turn latency metrics, and review AI-summarized call logs.
 
 ---
 
@@ -36,6 +36,16 @@ Users can configure voice assistants, upload and embed company knowledge, place 
    - `LIVE_MODEL`: `gemini-3.8-live` (fallback: `gemini-3.1-flash-live-preview`)
    - `EMBED_MODEL`: `gemini-embedding-2` (fallback: `gemini-embedding-001`)
    - `TRANSCRIBE_MODEL`: `gemini-3.5-transcribe` (fallback: `gemini-4-hydrogen`)
+
+---
+
+## Dashboard API key settings
+
+Set `DASHBOARD_SETTINGS_PASSWORD` in your Render service's Environment settings, or in `.env` for local development. Open **Settings** in the app to enter a new Gemini API key and the settings password. New requests and calls use the saved key. Select **Reset token count when saving** to start the server's reported usage counter at zero. The counter also starts at zero on server restart.
+
+Gemini rate limits are shared by keys from the same Google project. To switch quotas, use a key from a project with available quota. [Gemini API rate limits](https://aistudio.google.com/docs/rate-limits)
+
+The dashboard key is stored in `data/.env.gemini-key` and takes precedence over `GEMINI_API_KEY`. To retain it across Render restarts and redeploys, mount a persistent disk at the app's `data` directory.
 
 ---
 

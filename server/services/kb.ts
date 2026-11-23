@@ -1,7 +1,7 @@
 import { PDFParse } from 'pdf-parse';
 import { MODEL_CONFIG } from '../config/models.ts';
 import type { KnowledgeChunk, KnowledgeDocument, SearchChunkResult } from '../../src/types.ts';
-import { getGeminiClient, withModelFallback } from './gemini.ts';
+import { getGeminiClient, recordGeminiUsage, withModelFallback } from './gemini.ts';
 import { chunkText, estimateTokens, getStore, saveStore } from './store.ts';
 
 export async function extractTextFromUpload(params: {
@@ -59,6 +59,7 @@ export async function embedTexts(texts: string[]): Promise<number[][]> {
         });
       }
     );
+    recordGeminiUsage(ai, result.usageMetadata?.totalTokenCount);
     const embeddings = result.embeddings ?? [];
     for (const emb of embeddings) {
       vectors.push(emb.values ?? []);

@@ -1114,7 +1114,7 @@ export function DialerView({
 
   const startRealtimeSession = useCallback(
     async (stream: MediaStream | null) => {
-      setVoiceChannelStatus('Connecting Gemini Live...');
+      setVoiceChannelStatus('Connecting Fedora Pilot...');
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const ws = new WebSocket(`${proto}//${window.location.host}/api/live`);
       wsRef.current = ws;
@@ -1143,7 +1143,7 @@ export function DialerView({
 
         if (msg.type === 'ready') {
           setVoiceChannelStatus(
-            stream ? `Live Connected (${msg.model || 'Gemini Live'})` : 'Live Connected (Text Only)'
+            stream ? `Live Connected (${msg.model || 'Fedora Pilot'})` : 'Live Connected (Text Only)'
           );
           if (stream) {
             try {
@@ -1325,7 +1325,7 @@ export function DialerView({
 
         if (msg.type === 'error') {
           setVoiceChannelStatus('Live Error');
-          onNotify('error', 'Gemini Live error', msg.message || 'Connection issue');
+          onNotify('error', 'Fedora Pilot error', msg.message || 'Connection issue');
           return;
         }
 
@@ -1657,7 +1657,7 @@ export function DialerView({
             <div className="w-16 h-1.5 rounded-full bg-slate-800" />
             <div className="w-full flex items-center justify-between text-xs pt-2">
               <span className="font-mono text-slate-400">
-                {assistant.mode === 'pipeline' ? 'STT · LLM · TTS' : 'GEMINI LIVE'}
+                {assistant.mode === 'pipeline' ? 'STT · LLM · TTS' : 'Fedora Pilot'}
               </span>
               <span
                 className={`font-medium ${

@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -10,7 +11,11 @@ import { MODEL_CONFIG } from './server/config/models.ts';
 import {
   getGeminiBetaClient,
   getGeminiClient,
+  getGeminiSettings,
   getStatusCode,
+  recordGeminiUsage,
+  trackGeminiStream,
+  updateGeminiApiKey,
   withModelFallback,
 } from './server/services/gemini.ts';
 import {
@@ -62,11 +67,11 @@ function sendErrorResponse(res: Response, err: unknown, fallbackMsg: string): vo
   const status = getStatusCode(err);
   const message = err instanceof Error ? err.message : fallbackMsg;
   if (status === 403 || status === 400) {
-    res.status(status).json({ error: `${message} Check GEMINI_API_KEY in Settings > Secrets.` });
+    res.status(status).json({ error: `${message} Check the Gemini API key in Settings.` });
     return;
   }
   if (status === 429) {
-    res.status(429).json({ error: `Gemini quota rate limit hit (429). ${message}` });
+    res.status(429).json({ error: `Gemini quota rate limit hit (429). You can change the API key in Settings. ${message}` });
     return;
   }
   res.status(status && status >= 400 && status < 600 ? status : 500).json({ error: message });
@@ -82,14 +87,58 @@ async function startServer() {
 
   const aiRateLimit = createRateLimiter(90, 60_000);
   const crudRateLimit = createRateLimiter(300, 60_000);
+  const settingsRateLimit = createRateLimiter(10, 60_000);
+  const settingsPassword = process.env.DASHBOARD_SETTINGS_PASSWORD;
+  const passwordDigest = (password: string) => createHash('sha256').update(password).digest();
+  const settingsPasswordDigest = settingsPassword?.trim() ? passwordDigest(settingsPassword) : undefined;
+  const settingsStatus = () => ({
+    ...getGeminiSettings(),
+    canManageApiKey: Boolean(settingsPasswordDigest),
+  });
+
+  app.get('/api/settings', crudRateLimit, (_req, res) => {
+    res.set('Cache-Control', 'no-store').json(settingsStatus());
+  });
+
+  app.put('/api/settings/api-key', settingsRateLimit, (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    if (!settingsPasswordDigest) {
+      res.status(503).json({ error: 'Set DASHBOARD_SETTINGS_PASSWORD on the server to enable API key changes.' });
+      return;
+    }
+
+    const { password, apiKey, resetTokens } = req.body ?? {};
+    if (
+      typeof password !== 'string' ||
+      !timingSafeEqual(passwordDigest(password), settingsPasswordDigest)
+    ) {
+      res.status(403).json({ error: 'Incorrect settings password.' });
+      return;
+    }
+
+    const key = typeof apiKey === 'string' ? apiKey.trim() : '';
+    if (!key || key.length > 512 || /\s/.test(key) || key === 'MY_GEMINI_API_KEY') {
+      res.status(400).json({ error: 'Enter a valid Gemini API key.' });
+      return;
+    }
+    if (typeof resetTokens !== 'boolean') {
+      res.status(400).json({ error: 'Choose whether to reset the token count.' });
+      return;
+    }
+
+    try {
+      updateGeminiApiKey(key, resetTokens);
+      res.json(settingsStatus());
+    } catch {
+      res.status(500).json({ error: 'Unable to save the API key on the server.' });
+    }
+  });
 
   // Health & configured model info
   app.get('/api/models', crudRateLimit, (_req, res) => {
     res.json({
       ...MODEL_CONFIG,
-      hasApiKey: Boolean(
-        process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY'
-      ),
+      hasApiKey: getGeminiSettings().hasApiKey,
     });
   });
 
@@ -469,7 +518,7 @@ async function startServer() {
             }> = [];
             const modelParts: Part[] = [];
 
-            for await (const chunk of stream) {
+            for await (const chunk of trackGeminiStream(ai, stream)) {
               if (!receivedFirstChunk) {
                 receivedFirstChunk = true;
                 clearTimeout(firstChunkTimer);
@@ -667,7 +716,7 @@ async function startServer() {
           });
 
           const chunks: Buffer[] = [];
-          for await (const chunk of stream) {
+          for await (const chunk of trackGeminiStream(ai, stream)) {
             if (controller.signal.aborted) {
               throw new DOMException('Aborted', 'AbortError');
             }
@@ -757,6 +806,7 @@ async function startServer() {
         }
       );
 
+      recordGeminiUsage(ai, result.usageMetadata?.totalTokenCount);
       res.json({ text: (result.text ?? '').trim() });
     } catch (err) {
       sendErrorResponse(res, err, 'Audio transcription failed.');
@@ -823,6 +873,7 @@ async function startServer() {
             }
           );
 
+          recordGeminiUsage(ai, result.usageMetadata?.totalTokenCount);
           const parsed = JSON.parse((result.text ?? '{}').trim()) as {
             summary?: string;
             outcome?: string;

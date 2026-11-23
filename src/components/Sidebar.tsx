@@ -1,7 +1,7 @@
-import { Bot, BookOpen, History, PhoneCall } from 'lucide-react';
+import { Bot, BookOpen, History, PhoneCall, Settings } from 'lucide-react';
 import type { Assistant } from '../types';
 
-export type NavTab = 'assistants' | 'knowledge' | 'dialer' | 'logs';
+export type NavTab = 'assistants' | 'knowledge' | 'dialer' | 'logs' | 'settings';
 
 interface SidebarProps {
   activeTab: NavTab;
@@ -21,6 +21,7 @@ const NAV_ITEMS: Array<{
   { id: 'knowledge', label: 'Knowledge', icon: BookOpen },
   { id: 'dialer', label: 'Dialer', icon: PhoneCall },
   { id: 'logs', label: 'Call Logs', icon: History },
+  { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
 export function Sidebar({
@@ -64,6 +65,7 @@ export function Sidebar({
               <button
                 key={item.id}
                 type="button"
+                aria-current={isActive ? 'page' : undefined}
                 onClick={() => onSelectTab(item.id)}
                 className={`flex items-center justify-between gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   isActive

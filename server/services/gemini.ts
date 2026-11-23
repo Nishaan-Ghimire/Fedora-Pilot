@@ -1,45 +1,94 @@
-import { GoogleGenAI } from '@google/genai';
+import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { GoogleGenAI, type GenerateContentResponse } from '@google/genai';
 
+const keyPath = path.resolve('data', '.env.gemini-key');
+let dashboardApiKey: string | undefined;
+try {
+  dashboardApiKey = fs.readFileSync(keyPath, 'utf8').trim();
+} catch (error) {
+  if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+}
 let cachedClient: GoogleGenAI | null = null;
 let cachedBetaClient: GoogleGenAI | null = null;
+const clientUsageEpochs = new WeakMap<GoogleGenAI, number>();
+let usageEpoch = 0;
+let totalTokens = 0;
 
-function requireApiKey(): string {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
-    throw new Error('GEMINI_API_KEY is not configured in environment secrets.');
+function activeApiKey(): string | undefined {
+  const apiKey = dashboardApiKey || process.env.GEMINI_API_KEY?.trim();
+  return apiKey === 'MY_GEMINI_API_KEY' ? undefined : apiKey;
+}
+
+export function getGeminiSettings() {
+  return { hasApiKey: Boolean(activeApiKey()), totalTokens };
+}
+
+export function updateGeminiApiKey(apiKey: string, resetTokens: boolean): void {
+  const keyChanged = apiKey !== activeApiKey();
+  if (apiKey !== dashboardApiKey) {
+    const temporaryPath = `${keyPath}.${randomUUID()}.tmp`;
+    fs.mkdirSync(path.dirname(keyPath), { recursive: true });
+    try {
+      fs.writeFileSync(temporaryPath, apiKey, { mode: 0o600, flag: 'wx' });
+      fs.renameSync(temporaryPath, keyPath);
+    } finally {
+      fs.rmSync(temporaryPath, { force: true });
+    }
+    dashboardApiKey = apiKey;
   }
-  return apiKey;
+  if (resetTokens) {
+    totalTokens = 0;
+    usageEpoch++;
+  }
+  if (keyChanged || resetTokens) {
+    cachedClient = null;
+    cachedBetaClient = null;
+  }
+}
+
+export function recordGeminiUsage(client: GoogleGenAI, tokens?: number): void {
+  if (clientUsageEpochs.get(client) === usageEpoch && tokens && tokens > 0) {
+    totalTokens += tokens;
+  }
+}
+
+export async function* trackGeminiStream(
+  client: GoogleGenAI,
+  stream: AsyncIterable<GenerateContentResponse>,
+) {
+  let tokens: number | undefined;
+  try {
+    for await (const chunk of stream) {
+      tokens = chunk.usageMetadata?.totalTokenCount ?? tokens;
+      yield chunk;
+    }
+  } finally {
+    recordGeminiUsage(client, tokens);
+  }
+}
+
+function createGeminiClient(apiVersion?: string): GoogleGenAI {
+  const apiKey = activeApiKey();
+  if (!apiKey) {
+    throw new Error('Set a Gemini API key in Settings or configure GEMINI_API_KEY on the server.');
+  }
+  const client = new GoogleGenAI({
+    apiKey,
+    apiVersion,
+    httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+  });
+  clientUsageEpochs.set(client, usageEpoch);
+  return client;
 }
 
 export function getGeminiClient(): GoogleGenAI {
-  const apiKey = requireApiKey();
-  if (!cachedClient) {
-    cachedClient = new GoogleGenAI({
-      apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
-      },
-    });
-  }
-  return cachedClient;
+  return (cachedClient ??= createGeminiClient());
 }
 
 export function getGeminiBetaClient(): GoogleGenAI {
-  const apiKey = requireApiKey();
-  if (!cachedBetaClient) {
-    cachedBetaClient = new GoogleGenAI({
-      apiKey,
-      apiVersion: 'v1beta',
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
-      },
-    });
-  }
-  return cachedBetaClient;
+  return (cachedBetaClient ??= createGeminiClient('v1beta'));
 }
 
 export function getStatusCode(err: unknown): number | undefined {

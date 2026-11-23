@@ -3,7 +3,7 @@ import { Modality, type LiveServerMessage } from '@google/genai';
 import { WebSocket, WebSocketServer } from 'ws';
 import { MODEL_CONFIG } from '../config/models.ts';
 import type { Appointment } from '../../src/types.ts';
-import { getGeminiBetaClient, isModelNotFoundError } from './gemini.ts';
+import { getGeminiBetaClient, isModelNotFoundError, recordGeminiUsage } from './gemini.ts';
 import { getAllKnowledgeText } from './kb.ts';
 import { buildAgentSystemInstruction, VOICE_TOOL_DECLARATIONS } from './prompts.ts';
 import { getStore, saveStore } from './store.ts';
@@ -129,6 +129,7 @@ export function attachLiveWebSocketServer(wss: WebSocketServer): void {
                   }
                 },
                 onmessage: (message: LiveServerMessage) => {
+                  recordGeminiUsage(ai, message.usageMetadata?.totalTokenCount);
                   if (isClosing) return;
                   const content = message.serverContent;
 
@@ -216,10 +217,10 @@ export function attachLiveWebSocketServer(wss: WebSocketServer): void {
                   }
                 },
                 onerror: (err) => {
-                  console.error('Gemini Live error:', err);
+                  console.error('Fedora Pilot error:', err);
                   sendJson(clientWs, {
                     type: 'error',
-                    message: err?.message || 'Gemini Live connection error',
+                    message: err?.message || 'Fedora Pilot connection error',
                   });
                 },
                 onclose: (ev) => {
@@ -245,7 +246,7 @@ export function attachLiveWebSocketServer(wss: WebSocketServer): void {
             break;
           } catch (err) {
             lastErr = err;
-            console.error(`Gemini Live connect failed for ${model}:`, err);
+            console.error(`Fedora Pilot connect failed for ${model}:`, err);
             if (!isModelNotFoundError(err)) {
               break;
             }
@@ -258,7 +259,7 @@ export function attachLiveWebSocketServer(wss: WebSocketServer): void {
             message:
               lastErr instanceof Error
                 ? lastErr.message
-                : 'Unable to establish Gemini Live session.',
+                : 'Unable to establish Fedora Pilot session.',
           });
         }
         return;

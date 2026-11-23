@@ -1,6 +1,6 @@
 {
   "name": "Fedora-Pilot",
-  "description": "Vapi-style voice AI agent platform prototype for live demos with Pipeline (STT -> LLM -> TTS) and Realtime (Gemini Live) modes.",
+  "description": "Vapi-style voice AI agent platform prototype for live demos with Pipeline (STT -> LLM -> TTS) and Realtime (Fedora Pilot) modes.",
   "requestFramePermissions": ["microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

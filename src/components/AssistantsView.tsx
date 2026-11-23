@@ -252,7 +252,7 @@ export function AssistantsView({
               Voice Pipeline Mode
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Compare sentence-chunked RAG Pipeline against native bidirectional Gemini Live.
+              Choose sentence-chunked RAG Pipeline or Fedora Pilot realtime audio.
             </p>
           </div>
           <div className="inline-flex p-1 rounded-lg bg-[#090D16] border border-slate-800 shrink-0">
@@ -276,7 +276,7 @@ export function AssistantsView({
                   : 'text-slate-400 hover:text-slate-100'
               }`}
             >
-              Realtime (Gemini Live)
+              Realtime (Fedora Pilot)
             </button>
           </div>
         </div>

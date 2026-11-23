@@ -3,6 +3,7 @@ import { AssistantsView } from './components/AssistantsView';
 import { CallLogsView } from './components/CallLogsView';
 import { DialerView } from './components/DialerView';
 import { KnowledgeView } from './components/KnowledgeView';
+import { SettingsView } from './components/SettingsView';
 import { Sidebar, type NavTab } from './components/Sidebar';
 import { ToastStack, type ToastMessage } from './components/Toast';
 import type { AgentMode, Appointment, Assistant, CallLog } from './types';
@@ -131,7 +132,7 @@ export default function App() {
       mode === 'pipeline' ? 'Switched to Pipeline Mode' : 'Switched to Realtime Mode',
       mode === 'pipeline'
         ? 'STT -> RAG -> Streaming LLM -> Sentence-chunked 24kHz TTS'
-        : 'Bidirectional Gemini Live Audio API over WebSocket'
+        : 'Bidirectional Fedora Pilot audio over WebSocket'
     );
   };
 
@@ -170,7 +171,9 @@ export default function App() {
       />
 
       <main className="flex-1 min-w-0 overflow-y-auto">
-        {isLoading || !activeAssistant ? (
+        {activeTab === 'settings' ? (
+          <SettingsView />
+        ) : isLoading || !activeAssistant ? (
           <div className="p-8 text-sm text-slate-400">
             Loading Fedora-Pilot workspace...
           </div>
