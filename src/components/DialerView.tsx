@@ -15,6 +15,7 @@ import {
   Send,
   Sparkles,
 } from 'lucide-react';
+import { MUNICIPALITY_ASSISTANT_ID } from '../municipality';
 import type {
   AgentMode,
   Appointment,
@@ -98,56 +99,28 @@ const KEYPAD_KEYS = [
   { digit: '#', sub: '' },
 ];
 
-const NEPALI_DEMO_SCRIPT_QUESTIONS = [
-  {
-    label: '1. समय र पार्किङ (Hours & Parking)',
-    text: 'शनिबार क्लिनिक कति बजे खुल्छ र बिरामीको लागि पार्किङ सुविधा छ?',
-  },
-  {
-    label: '2. सेवा र शुल्क (Pricing)',
-    text: 'नियमित दाँत सफाइ र क्लिनिकभित्र दाँत चम्काउनेको शुल्क कति लाग्छ?',
-  },
-  {
-    label: '3. बीमा र बुकिङ (Insurance & Booking)',
-    text: 'यहाँ शिखर इन्स्योरेन्सको बिल दाबी चल्छ? मेरो मंगलबार दिउँसो २ बजेको अपोइन्टमेन्ट बुक गरिदिनुहोस्। मेरो नाम सुमन थापा र फोन नम्बर ९८४१००११२२ हो।',
-  },
-  {
-    label: '4. ज्ञान बाहिरको प्रश्न (Guardrail)',
-    text: 'के तपाईंहरू इलेक्ट्रिक टूथब्रश बेच्नुहुन्छ वा कपाल प्रत्यारोपण सेवा दिनुहुन्छ?',
-  },
-  {
-    label: '5. अवरोध परीक्षण (Barge-In Test)',
-    text: 'कृपया तपाईंहरूको क्लिनिकका सबै सेवा र शुल्कहरू विस्तारमा भनिदिनुहोस् न?',
-  },
-];
-
-const DEMO_SCRIPT_QUESTIONS = [
-  {
-    label: '1. Hours & Parking',
-    text: 'What are your opening hours on Saturday, and is there patient parking?',
-  },
-  {
-    label: '2. Service Pricing',
-    text: 'How much do a routine cleaning and in-office teeth whitening cost?',
-  },
-  {
-    label: '3. Insurance & Booking Tool',
-    text: 'Do you take Delta Dental PPO, and can you book me for Tuesday at 2 PM? My name is Jordan Lee, phone 555-234-9810.',
-  },
-  {
-    label: '4. Out-of-Knowledge Guard',
-    text: 'Do you sell electric toothbrushes or offer hair transplant consultations?',
-  },
-  {
-    label: '5. Barge-In Test',
-    text: 'Can you walk me through all of your dental services and prices in detail?',
-  },
+const MUNICIPALITY_SAMPLE_QUESTIONS = [
+  { label: 'सम्पर्क', text: 'नगरपालिकाको कार्यालय कहाँ छ र सम्पर्क नम्बर के हो?' },
+  { label: 'नागरिक सेवा', text: 'वंशजको आधारमा नागरिकता सिफारिस लिन के कागजात चाहिन्छ?' },
+  { label: 'बजेट', text: 'आर्थिक वर्ष २०८३/८४ को कुल बजेट कति हो?' },
+  { label: 'स्वास्थ्य', text: 'नगर अस्पताल कहाँ छ र कति शय्याको हो?' },
+  { label: 'शिक्षा', text: 'शिक्षाको क्षेत्रमा के काम भएको छ?' },
 ];
 
 function formatTimer(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function getDialerNumber(assistant: Assistant) {
+  const prefix = COUNTRY_CODES.find(({ code }) => assistant.phoneNumber.startsWith(code));
+  return {
+    countryCode: prefix?.code ?? (assistant.language.toLowerCase().startsWith('ne') ? '+977' : '+1'),
+    phoneNumber: prefix
+      ? assistant.phoneNumber.slice(prefix.code.length).trimStart()
+      : assistant.phoneNumber,
+  };
 }
 
 export function DialerView({
@@ -159,11 +132,9 @@ export function DialerView({
   onCallSaved,
   onNotify,
 }: DialerViewProps) {
-  const isNepaliAssistant = assistant.language.toLowerCase().startsWith('ne');
-  const [countryCode, setCountryCode] = useState(isNepaliAssistant ? '+977' : '+1');
-  const [phoneNumber, setPhoneNumber] = useState(
-    assistant.phoneNumber || (isNepaliAssistant ? '1-555-0199' : '(555) 010-0199')
-  );
+  const initialNumber = getDialerNumber(assistant);
+  const [countryCode, setCountryCode] = useState(initialNumber.countryCode);
+  const [phoneNumber, setPhoneNumber] = useState(initialNumber.phoneNumber);
   const [sttEngine, setSttEngine] = useState<'auto' | 'gemini'>('auto');
   const [callState, setCallState] = useState<CallState>('idle');
   const [elapsedSec, setElapsedSec] = useState(0);
@@ -229,9 +200,9 @@ export function DialerView({
   useEffect(() => {
     assistantRef.current = assistant;
     if (callStateRef.current === 'idle') {
-      const isNp = assistant.language.toLowerCase().startsWith('ne');
-      setCountryCode(isNp ? '+977' : '+1');
-      setPhoneNumber(assistant.phoneNumber);
+      const number = getDialerNumber(assistant);
+      setCountryCode(number.countryCode);
+      setPhoneNumber(number.phoneNumber);
     }
   }, [assistant]);
 
@@ -1933,55 +1904,51 @@ export function DialerView({
               <div ref={transcriptEndRef} />
             </div>
 
-            {/* Collapsible 5-Question Demo Script */}
-            <div className="border-t border-slate-800/80 bg-[#0B101B]">
-              <button
-                type="button"
-                onClick={() => setDemoScriptOpen((o) => !o)}
-                className="w-full px-5 py-2.5 flex items-center justify-between text-xs font-medium text-slate-300 hover:text-white cursor-pointer"
-              >
-                <span className="flex items-center gap-2">
-                  <BookOpen className="w-3.5 h-3.5 text-sky-400" />
-                  <span>
-                    {isNepaliAssistant
-                      ? `${assistant.companyName} Demo Script (5 Nepali Prompts)`
-                      : `${assistant.companyName} Demo Script (5 Test Prompts)`}
+            {assistant.id === MUNICIPALITY_ASSISTANT_ID && (
+              <div className="border-t border-slate-800/80 bg-[#0B101B]">
+                <button
+                  type="button"
+                  onClick={() => setDemoScriptOpen((o) => !o)}
+                  className="w-full px-5 py-2.5 flex items-center justify-between text-xs font-medium text-slate-300 hover:text-white cursor-pointer"
+                >
+                  <span className="flex items-center gap-2">
+                    <BookOpen className="w-3.5 h-3.5 text-sky-400" />
+                    <span>
+                      नगरपालिकाबारे नमुना प्रश्नहरू
+                    </span>
                   </span>
-                </span>
-                {demoScriptOpen ? (
-                  <ChevronDown className="w-3.5 h-3.5" />
-                ) : (
-                  <ChevronUp className="w-3.5 h-3.5" />
-                )}
-              </button>
-              {demoScriptOpen && (
-                <div className="px-5 pb-3.5 space-y-1.5 max-h-48 overflow-y-auto">
-                  {(isNepaliAssistant
-                    ? NEPALI_DEMO_SCRIPT_QUESTIONS
-                    : DEMO_SCRIPT_QUESTIONS
-                  ).map((q) => (
-                    <div
-                      key={q.label}
-                      className="flex items-center justify-between gap-3 py-1.5 px-2.5 rounded-lg bg-[#111827] border border-slate-800/80 text-xs"
-                    >
-                      <div className="min-w-0">
-                        <span className="font-medium text-sky-300 mr-2">{q.label}:</span>
-                        <span className="text-slate-300">{q.text}</span>
+                  {demoScriptOpen ? (
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  ) : (
+                    <ChevronUp className="w-3.5 h-3.5" />
+                  )}
+                </button>
+                {demoScriptOpen && (
+                  <div className="px-5 pb-3.5 space-y-1.5 max-h-48 overflow-y-auto">
+                    {MUNICIPALITY_SAMPLE_QUESTIONS.map((q) => (
+                      <div
+                        key={q.label}
+                        className="flex items-center justify-between gap-3 py-1.5 px-2.5 rounded-lg bg-[#111827] border border-slate-800/80 text-xs"
+                      >
+                        <div className="min-w-0">
+                          <span className="font-medium text-sky-300 mr-2">{q.label}:</span>
+                          <span className="text-slate-300">{q.text}</span>
+                        </div>
+                        {callState === 'connected' && (
+                          <button
+                            type="button"
+                            onClick={() => handleSubmitTextTurn(q.text)}
+                            className="shrink-0 px-2.5 py-1 rounded bg-slate-800 hover:bg-sky-500 hover:text-slate-950 text-[11px] font-medium text-slate-200 transition-colors cursor-pointer"
+                          >
+                            Send
+                          </button>
+                        )}
                       </div>
-                      {callState === 'connected' && (
-                        <button
-                          type="button"
-                          onClick={() => handleSubmitTextTurn(q.text)}
-                          className="shrink-0 px-2.5 py-1 rounded bg-slate-800 hover:bg-sky-500 hover:text-slate-950 text-[11px] font-medium text-slate-200 transition-colors cursor-pointer"
-                        >
-                          Send
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Debug Drawer: Latency Breakdown, Retrieved Chunks & Appointments */}
@@ -2103,39 +2070,40 @@ export function DialerView({
                   </p>
                 )}
 
-                {/* Booked Appointments List (from book_appointment tool) */}
-                <div className="pt-4 border-t border-slate-800/80 space-y-2.5">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-medium text-slate-300">
-                      Booked Appointments (Tool Calls)
-                    </span>
-                    <span className="font-mono tabular-nums text-slate-400">
-                      {appointments.length}
-                    </span>
-                  </div>
-                  {appointments.length === 0 ? (
-                    <p className="text-xs text-slate-500">
-                      Ask the agent to book an appointment to trigger the tool call.
-                    </p>
-                  ) : (
-                    <div className="space-y-2">
-                      {appointments.slice(0, 6).map((appt) => (
-                        <div
-                          key={appt.id}
-                          className="rounded-lg border border-emerald-500/25 bg-emerald-500/5 p-2.5 text-xs space-y-0.5"
-                        >
-                          <div className="flex items-center justify-between font-medium text-emerald-300">
-                            <span>{appt.name}</span>
-                            <span className="font-mono tabular-nums text-[11px]">
-                              {appt.phone}
-                            </span>
-                          </div>
-                          <p className="text-slate-300">{appt.datetime}</p>
-                        </div>
-                      ))}
+                {assistant.id !== MUNICIPALITY_ASSISTANT_ID && (
+                  <div className="pt-4 border-t border-slate-800/80 space-y-2.5">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-medium text-slate-300">
+                        Booked Appointments (Tool Calls)
+                      </span>
+                      <span className="font-mono tabular-nums text-slate-400">
+                        {appointments.length}
+                      </span>
                     </div>
-                  )}
-                </div>
+                    {appointments.length === 0 ? (
+                      <p className="text-xs text-slate-500">
+                        Ask the agent to book an appointment to trigger the tool call.
+                      </p>
+                    ) : (
+                      <div className="space-y-2">
+                        {appointments.slice(0, 6).map((appt) => (
+                          <div
+                            key={appt.id}
+                            className="rounded-lg border border-emerald-500/25 bg-emerald-500/5 p-2.5 text-xs space-y-0.5"
+                          >
+                            <div className="flex items-center justify-between font-medium text-emerald-300">
+                              <span>{appt.name}</span>
+                              <span className="font-mono tabular-nums text-[11px]">
+                                {appt.phone}
+                              </span>
+                            </div>
+                            <p className="text-slate-300">{appt.datetime}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           )}

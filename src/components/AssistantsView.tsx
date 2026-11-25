@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { PhoneCall, Plus, Save, Trash2, Volume2 } from 'lucide-react';
+import { MUNICIPALITY_ASSISTANT_ID, MUNICIPALITY_GREETING } from '../municipality';
 import {
   VOICE_OPTIONS,
   type AgentMode,
@@ -42,6 +43,7 @@ export function AssistantsView({
     assistants.find((a) => a.id === selectedAssistantId) ?? assistants[0];
 
   const [isCreatingNew, setIsCreatingNew] = useState(false);
+  const isMunicipality = !isCreatingNew && active?.id === MUNICIPALITY_ASSISTANT_ID;
   const [name, setName] = useState('');
   const [companyName, setCompanyName] = useState('');
   const [phoneNumber, setPhoneNumber] = useState('');
@@ -313,7 +315,7 @@ export function AssistantsView({
               type="text"
               value={companyName}
               onChange={(e) => setCompanyName(e.target.value)}
-              placeholder="e.g. Acme Dental"
+              placeholder="e.g. सुन्दरहरैँचा नगरपालिका"
               className="w-full rounded-lg bg-[#090D16] border border-slate-800 px-3.5 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-sky-500"
               required
             />
@@ -378,12 +380,12 @@ export function AssistantsView({
               >
                 First Message (Pre-cached while ringing for instant post-ring playback)
               </label>
-              {greetFirst && (
+              {greetFirst && !isMunicipality && (
                 <button
                   type="button"
                   onClick={() =>
                     setFirstMessage(
-                      'नमस्ते! म सुन्दरहरैँचा नगरपालिकाको एआई सहयोगी बोल्दै छु। हजुरलाई कसरी मद्दत गर्न सक्छु?'
+                      MUNICIPALITY_GREETING
                     )
                   }
                   className="text-[11px] font-medium text-sky-400 hover:text-sky-300 transition-colors cursor-pointer"
@@ -396,9 +398,10 @@ export function AssistantsView({
               id="ast-first-msg"
               type="text"
               disabled={!greetFirst}
+              readOnly={isMunicipality}
               value={firstMessage}
               onChange={(e) => setFirstMessage(e.target.value)}
-              placeholder="नमस्ते! म सुन्दरहरैँचा नगरपालिकाको एआई सहयोगी बोल्दै छु। हजुरलाई कसरी मद्दत गर्न सक्छु?"
+              placeholder={MUNICIPALITY_GREETING}
               className="w-full rounded-lg bg-[#111827] border border-slate-800 px-3.5 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-sky-500 disabled:cursor-not-allowed"
             />
           </div>
@@ -413,13 +416,12 @@ export function AssistantsView({
             >
               System Prompt (Company grounding & phone rules are injected automatically)
             </label>
-            <span className="text-xs text-slate-500">
-              Answers strictly from &lt;knowledge&gt;
-            </span>
+            <span className="text-xs text-slate-500">{isMunicipality ? 'Bundled · Read-only' : 'Answers from the knowledge base'}</span>
           </div>
           <textarea
             id="ast-system-prompt"
             rows={4}
+            readOnly={isMunicipality}
             value={systemPrompt}
             onChange={(e) => setSystemPrompt(e.target.value)}
             className="w-full rounded-lg bg-[#090D16] border border-slate-800 px-3.5 py-2.5 text-sm text-slate-100 leading-relaxed focus:outline-none focus:border-sky-500"
@@ -583,7 +585,7 @@ export function AssistantsView({
         {/* Actions */}
         <div className="flex items-center justify-between pt-4 border-t border-slate-800/80">
           <div>
-            {!isCreatingNew && assistants.length > 1 && active && (
+            {!isCreatingNew && !isMunicipality && assistants.length > 1 && active && (
               <button
                 type="button"
                 onClick={() => onDeleteAssistant(active.id)}

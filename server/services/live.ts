@@ -2,10 +2,11 @@ import type { IncomingMessage } from 'node:http';
 import { Modality, type LiveServerMessage, type Session } from '@google/genai';
 import { WebSocket, WebSocketServer } from 'ws';
 import { MODEL_CONFIG } from '../config/models.ts';
+import { MUNICIPALITY_ASSISTANT_ID } from '../../src/municipality.ts';
 import type { Appointment } from '../../src/types.ts';
 import { markGeminiClientUnavailable, recordGeminiUsage, withModelFallback } from './gemini.ts';
 import { getAllKnowledgeText } from './kb.ts';
-import { buildAgentSystemInstruction, VOICE_TOOL_DECLARATIONS } from './prompts.ts';
+import { buildAgentSystemInstruction, getVoiceToolDeclarations } from './prompts.ts';
 import { getStore, saveStore } from './store.ts';
 
 interface LiveStartMessage {
@@ -54,7 +55,6 @@ export function attachLiveWebSocketServer(wss: WebSocketServer): void {
     let isConnecting = false;
     const connectionLifetime = new AbortController();
     let isClosing = false;
-    let assistantId = 'aria-acme-dental';
 
     const cleanup = () => {
       if (isClosing) return;
@@ -84,7 +84,7 @@ export function attachLiveWebSocketServer(wss: WebSocketServer): void {
 
       if (msg.type === 'start') {
         if (liveSession || isConnecting || isClosing) return;
-        assistantId = msg.assistantId || 'aria-acme-dental';
+        const assistantId = msg.assistantId || MUNICIPALITY_ASSISTANT_ID;
         const store = getStore();
         const assistant =
           store.assistants.find((a) => a.id === assistantId) ?? store.assistants[0];
@@ -124,7 +124,7 @@ export function attachLiveWebSocketServer(wss: WebSocketServer): void {
                   inputAudioTranscription: {},
                   outputAudioTranscription: {},
                   systemInstruction: liveInstruction,
-                  tools: [{ functionDeclarations: VOICE_TOOL_DECLARATIONS }],
+                  tools: [{ functionDeclarations: getVoiceToolDeclarations(assistant.id) }],
                 },
                 callbacks: {
                   onmessage: (message: LiveServerMessage) => {
@@ -167,9 +167,9 @@ export function attachLiveWebSocketServer(wss: WebSocketServer): void {
                     if (calls && calls.length > 0 && liveSession) {
                       const functionResponses = calls.map((call) => {
                         const args = (call.args ?? {}) as Record<string, unknown>;
-                        let toolResult: Record<string, unknown> = { ok: true };
+                        let toolResult: Record<string, unknown> = { error: 'Tool is unavailable for this assistant.' };
 
-                        if (call.name === 'book_appointment') {
+                        if (call.name === 'book_appointment' && assistant.id !== MUNICIPALITY_ASSISTANT_ID) {
                           const appointment: Appointment = {
                             id: `appt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
                             assistantId: assistant.id,
@@ -182,7 +182,7 @@ export function attachLiveWebSocketServer(wss: WebSocketServer): void {
                           s.appointments.unshift(appointment);
                           saveStore();
                           toolResult = { status: 'confirmed', appointment };
-                        } else if (call.name === 'transfer_to_human') {
+                        } else if (call.name === 'transfer_to_human' && assistant.id !== MUNICIPALITY_ASSISTANT_ID) {
                           toolResult = {
                             status: 'transferring',
                             department: String(args.department ?? 'Front Desk'),

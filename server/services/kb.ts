@@ -1,8 +1,9 @@
 import { PDFParse } from 'pdf-parse';
 import { MODEL_CONFIG } from '../config/models.ts';
+import { MUNICIPALITY_ASSISTANT_ID, MUNICIPALITY_KNOWLEDGE_ID } from '../../src/municipality.ts';
 import type { KnowledgeChunk, KnowledgeDocument, SearchChunkResult } from '../../src/types.ts';
 import { recordGeminiUsage, withModelFallback } from './gemini.ts';
-import { chunkText, estimateTokens, getStore, saveStore } from './store.ts';
+import { chunkText, estimateTokens, getStore, MUNICIPALITY_KNOWLEDGE, saveStore } from './store.ts';
 
 export async function extractTextFromUpload(params: {
   filename: string;
@@ -196,10 +197,18 @@ export function getAllKnowledgeText(assistantId: string): {
 } {
   const store = getStore();
   const assistantChunks = store.chunks.filter((c) => c.assistantId === assistantId);
-  const totalTokens = assistantChunks.reduce((acc, c) => acc + c.tokenEstimate, 0);
-  const text = assistantChunks
-    .map((c) => `[Source: ${c.source}]\n${c.text}`)
-    .join('\n\n---\n\n');
+  const isMunicipality = assistantId === MUNICIPALITY_ASSISTANT_ID;
+  const supplementalChunks = isMunicipality
+    ? assistantChunks.filter((chunk) => chunk.docId !== MUNICIPALITY_KNOWLEDGE_ID)
+    : assistantChunks;
+  const totalTokens = supplementalChunks.reduce(
+    (acc, chunk) => acc + chunk.tokenEstimate,
+    isMunicipality ? estimateTokens(MUNICIPALITY_KNOWLEDGE) : 0,
+  );
+  const snippets = supplementalChunks
+    .map((c) => `[Source: ${c.source}]\n${c.text}`);
+  if (isMunicipality) snippets.unshift(MUNICIPALITY_KNOWLEDGE);
+  const text = snippets.join('\n\n---\n\n');
 
   const chunks: SearchChunkResult[] = assistantChunks.map((c) => ({
     id: c.id,

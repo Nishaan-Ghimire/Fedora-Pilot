@@ -68,27 +68,8 @@ The dashboard key is stored in `data/.env.gemini-key` and takes precedence over 
 
 ---
 
-## Demo Script — Nepali Default (`अनिता (Anita) — हिमालयन डेन्टल केयर` · `+977 1-555-0199`)
+## Municipality assistant
 
-Open the **Dialer** screen (preloaded with **अनिता (Anita) — हिमालयन डेन्टल केयर** in `ne-NP`) and click **Start Voice Call**. Once Anita finishes her Nepali greeting, test these 5 prompts in order (an English **Aria — Acme Dental** assistant is also available in the sidebar):
+The default assistant uses the checked-in Nepali [system prompt](server/config/municipality/system-prompt.ne.md) and [knowledge base](server/config/municipality/knowledge-base.ne.md). The dashboard protects the prompt and bundled document. **Restore Bundled Knowledge** reloads the source document while keeping supplemental uploads.
 
-1. **समय र पार्किङ — Hours & Parking (Grounded Retrieval)**
-   > *"शनिबार क्लिनिक कति बजे खुल्छ र बिरामीको लागि पार्किङ सुविधा छ?"*
-   - Expected: Saturday 9:00 AM to 2:00 PM (बिहान ९:०० बजेदेखि दिउँसो २:०० बजेसम्म) and free parking behind the clinic in Lazimpat.
-
-2. **सेवा र शुल्क — Services & Pricing (Multi-item Grounding)**
-   > *"नियमित दाँत सफाइ र क्लिनिकभित्र दाँत चम्काउनेको शुल्क कति लाग्छ?"*
-   - Expected: Routine cleaning & exam is 1,500 NPR (एक हजार पाँच सय रुपैयाँ); in-office whitening is 8,500 NPR (आठ हजार पाँच सय रुपैयाँ).
-
-3. **बीमा र अपोइन्टमेन्ट बुकिङ — Insurance & `book_appointment` Tool**
-   > *"यहाँ शिखर इन्स्योरेन्सको बिल दाबी चल्छ? मेरो मंगलबार दिउँसो २ बजेको अपोइन्टमेन्ट बुक गरिदिनुहोस्। मेरो नाम सुमन थापा र फोन नम्बर ९८४१००११२२ हो।"*
-   - Expected: Confirms Shikhar Insurance VAT claim bills are provided, repeats back name/number/time in Nepali, invokes `book_appointment`, and displays the booking in the Debug Drawer.
-
-4. **ज्ञान बाहिरको प्रश्न — Out-of-Knowledge Guardrail**
-   > *"के तपाईंहरू इलेक्ट्रिक टूथब्रश बेच्नुहुन्छ वा कपाल प्रत्यारोपण सेवा दिनुहुन्छ?"*
-   - Expected: Politely declines to guess and offers to take a message or transfer to a human representative.
-
-5. **अवरोध परीक्षण — Interruption / Barge-In Test**
-   > *"कृपया तपाईंहरूको क्लिनिकका सबै सेवा र शुल्कहरू विस्तारमा भनिदिनुहोस् न?"*
-   - Speak over Anita mid-sentence to interrupt playback immediately and inspect `· interrupted` truncation in the transcript.
-
+Open the **Dialer** to test questions about municipal services, budgets, education, or the municipal hospital. The bundled assistant provides information and can end the demo call. Appointment and transfer tools are available to other assistants.

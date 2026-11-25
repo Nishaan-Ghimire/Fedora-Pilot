@@ -8,6 +8,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { createServer as createViteServer } from 'vite';
 import { WebSocketServer } from 'ws';
 import { MODEL_CONFIG } from './server/config/models.ts';
+import { MUNICIPALITY_ASSISTANT_ID, MUNICIPALITY_KNOWLEDGE_ID } from './src/municipality.ts';
 import {
   getGeminiSettings,
   getStatusCode,
@@ -26,7 +27,7 @@ import {
 import { attachLiveWebSocketServer } from './server/services/live.ts';
 import {
   buildAgentSystemInstruction,
-  VOICE_TOOL_DECLARATIONS,
+  getVoiceToolDeclarations,
 } from './server/services/prompts.ts';
 import {
   getStore,
@@ -166,8 +167,10 @@ async function startServer() {
         if (typeof body.greetFirst === 'boolean') {
           existing.greetFirst = body.greetFirst;
         }
-        existing.firstMessage = body.firstMessage?.trim() ?? existing.firstMessage;
-        existing.systemPrompt = body.systemPrompt?.trim() ?? existing.systemPrompt;
+        if (existing.id !== MUNICIPALITY_ASSISTANT_ID) {
+          existing.firstMessage = body.firstMessage?.trim() ?? existing.firstMessage;
+          existing.systemPrompt = body.systemPrompt?.trim() ?? existing.systemPrompt;
+        }
         existing.language = body.language?.trim() || existing.language;
         existing.voice = body.voice || existing.voice;
         existing.styleInstruction =
@@ -226,6 +229,10 @@ async function startServer() {
   });
 
   app.delete('/api/assistants/:id', crudRateLimit, (req, res) => {
+    if (req.params.id === MUNICIPALITY_ASSISTANT_ID) {
+      res.status(403).json({ error: 'The bundled municipality assistant cannot be deleted.' });
+      return;
+    }
     const store = getStore();
     if (store.assistants.length <= 1) {
       res.status(400).json({ error: 'At least one assistant must remain available.' });
@@ -267,6 +274,10 @@ async function startServer() {
   });
 
   app.delete('/api/kb/doc/:docId', crudRateLimit, (req, res) => {
+    if (req.params.docId === MUNICIPALITY_KNOWLEDGE_ID) {
+      res.status(403).json({ error: 'The bundled municipality knowledge base cannot be deleted.' });
+      return;
+    }
     const store = getStore();
     store.documents = store.documents.filter((d) => d.id !== req.params.docId);
     store.chunks = store.chunks.filter((c) => c.docId !== req.params.docId);
@@ -275,7 +286,7 @@ async function startServer() {
   });
 
   app.post('/api/kb/reset-seed', crudRateLimit, (req, res) => {
-    const assistantId = String(req.body?.assistantId || 'anita-himalayan-dental-np');
+    const assistantId = String(req.body?.assistantId || MUNICIPALITY_ASSISTANT_ID);
     resetSeedKnowledgeForAssistant(assistantId);
     res.json({ ok: true });
   });
@@ -494,7 +505,7 @@ async function startServer() {
                   config: {
                     abortSignal: attemptController.signal,
                     systemInstruction,
-                    tools: [{ functionDeclarations: VOICE_TOOL_DECLARATIONS }],
+                    tools: [{ functionDeclarations: getVoiceToolDeclarations(assistant.id) }],
                     ...(isGemini4
                       ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
                       : { temperature: assistant.temperature }),
@@ -568,9 +579,9 @@ async function startServer() {
 
         for (const call of firstPass.pendingCalls) {
           const args = call.args ?? {};
-          let toolResult: Record<string, unknown> = { ok: true };
+          let toolResult: Record<string, unknown> = { error: 'Tool is unavailable for this assistant.' };
 
-          if (call.name === 'book_appointment') {
+          if (call.name === 'book_appointment' && assistant.id !== MUNICIPALITY_ASSISTANT_ID) {
             const appt: Appointment = {
               id: `appt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
               assistantId: assistant.id,
@@ -582,7 +593,7 @@ async function startServer() {
             store.appointments.unshift(appt);
             saveStore();
             toolResult = { status: 'confirmed', appointment: appt };
-          } else if (call.name === 'transfer_to_human') {
+          } else if (call.name === 'transfer_to_human' && assistant.id !== MUNICIPALITY_ASSISTANT_ID) {
             toolResult = {
               status: 'transferring',
               department: String(args.department ?? 'Front Desk'),
@@ -877,11 +888,13 @@ async function startServer() {
         }
       }
 
+      const store = getStore();
+      const defaultAssistant = store.assistants[0];
       const callRecord: CallLog = {
         id: `call-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        assistantId: body.assistantId || 'anita-himalayan-dental-np',
-        assistantName: body.assistantName || 'अनिता (Anita)',
-        phoneNumber: body.phoneNumber || '+977 1-555-0199',
+        assistantId: body.assistantId || defaultAssistant.id,
+        assistantName: body.assistantName || defaultAssistant.name,
+        phoneNumber: body.phoneNumber || defaultAssistant.phoneNumber,
         mode: body.mode === 'realtime' ? 'realtime' : 'pipeline',
         durationSec: typeof body.durationSec === 'number' ? body.durationSec : 0,
         startedAt: body.startedAt || new Date().toISOString(),
@@ -896,7 +909,6 @@ async function startServer() {
         transfers: Array.isArray(body.transfers) ? body.transfers : [],
       };
 
-      const store = getStore();
       store.calls.unshift(callRecord);
       saveStore();
 

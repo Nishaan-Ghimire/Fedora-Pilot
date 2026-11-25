@@ -6,13 +6,14 @@ import { KnowledgeView } from './components/KnowledgeView';
 import { SettingsView } from './components/SettingsView';
 import { Sidebar, type NavTab } from './components/Sidebar';
 import { ToastStack, type ToastMessage } from './components/Toast';
+import { MUNICIPALITY_ASSISTANT_ID } from './municipality';
 import type { AgentMode, Appointment, Assistant, CallLog } from './types';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<NavTab>('dialer');
   const [assistants, setAssistants] = useState<Assistant[]>([]);
   const [selectedAssistantId, setSelectedAssistantId] = useState<string>(
-    'anita-himalayan-dental-np'
+    MUNICIPALITY_ASSISTANT_ID
   );
   const [calls, setCalls] = useState<CallLog[]>([]);
   const [appointments, setAppointments] = useState<Appointment[]>([]);

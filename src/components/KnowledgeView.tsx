@@ -7,6 +7,7 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react';
+import { MUNICIPALITY_ASSISTANT_ID, MUNICIPALITY_KNOWLEDGE_ID } from '../municipality';
 import type {
   Assistant,
   KnowledgeDocument,
@@ -220,15 +221,16 @@ export function KnowledgeView({
 
   const handleResetSeed = async () => {
     try {
-      await fetch('/api/kb/reset-seed', {
+      const response = await fetch('/api/kb/reset-seed', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ assistantId: assistant.id }),
       });
-      onNotify('success', `${assistant.companyName} demo knowledge restored`);
+      if (!response.ok) throw new Error('Restore failed');
+      onNotify('success', 'Bundled municipality knowledge restored');
       await fetchKb();
     } catch {
-      onNotify('error', 'Failed to restore demo knowledge');
+      onNotify('error', 'Failed to restore bundled knowledge');
     }
   };
 
@@ -283,15 +285,14 @@ export function KnowledgeView({
 
         {/* Context Strategy Control */}
         <div className="flex items-center gap-3">
-          {(assistant.id === 'anita-himalayan-dental-np' ||
-            assistant.id === 'aria-acme-dental') && (
+          {assistant.id === MUNICIPALITY_ASSISTANT_ID && (
             <button
               type="button"
               onClick={handleResetSeed}
               className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-700 bg-[#111827] hover:bg-slate-800 text-xs font-medium text-slate-200 cursor-pointer whitespace-nowrap"
             >
               <RotateCcw className="w-3.5 h-3.5 text-sky-400" />
-              <span>Reset Demo KB</span>
+              <span>Restore Bundled Knowledge</span>
             </button>
           )}
           <label
@@ -464,7 +465,7 @@ export function KnowledgeView({
                   type="text"
                   value={sourceTitle}
                   onChange={(e) => setSourceTitle(e.target.value)}
-                  placeholder="e.g. Patient Billing FAQs"
+                  placeholder="e.g. Ward Office FAQs"
                   className="w-full rounded-lg bg-[#090D16] border border-slate-800 px-3.5 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-500"
                 />
               </div>
@@ -651,14 +652,18 @@ export function KnowledgeView({
                     </div>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => handleDeleteDoc(doc.id)}
-                  aria-label={`Delete ${doc.source}`}
-                  className="p-2 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 transition-colors cursor-pointer shrink-0"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                {doc.id === MUNICIPALITY_KNOWLEDGE_ID ? (
+                  <span className="text-xs text-slate-400">Bundled</span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteDoc(doc.id)}
+                    aria-label={`Delete ${doc.source}`}
+                    className="p-2 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 transition-colors cursor-pointer shrink-0"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                )}
               </div>
             ))}
           </div>
