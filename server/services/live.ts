@@ -1,9 +1,9 @@
 import type { IncomingMessage } from 'node:http';
-import { Modality, type LiveServerMessage } from '@google/genai';
+import { Modality, type LiveServerMessage, type Session } from '@google/genai';
 import { WebSocket, WebSocketServer } from 'ws';
 import { MODEL_CONFIG } from '../config/models.ts';
 import type { Appointment } from '../../src/types.ts';
-import { getGeminiBetaClient, isModelNotFoundError, recordGeminiUsage } from './gemini.ts';
+import { markGeminiClientUnavailable, recordGeminiUsage, withModelFallback } from './gemini.ts';
 import { getAllKnowledgeText } from './kb.ts';
 import { buildAgentSystemInstruction, VOICE_TOOL_DECLARATIONS } from './prompts.ts';
 import { getStore, saveStore } from './store.ts';
@@ -31,15 +31,35 @@ function sendJson(ws: WebSocket, payload: Record<string, unknown>): void {
   }
 }
 
+function waitForLiveSession(connection: Promise<Session>, signal: AbortSignal): Promise<Session> {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
+
+    void connection.then((session) => {
+      signal.removeEventListener('abort', onAbort);
+      if (signal.aborted) session.close();
+      else resolve(session);
+    }, (error) => {
+      signal.removeEventListener('abort', onAbort);
+      reject(error);
+    }).catch(reject);
+  });
+}
+
 export function attachLiveWebSocketServer(wss: WebSocketServer): void {
   wss.on('connection', (clientWs: WebSocket, _req: IncomingMessage) => {
-    let liveSession: Awaited<ReturnType<ReturnType<typeof getGeminiBetaClient>['live']['connect']>> | null = null;
+    let liveSession: Session | null = null;
+    let isConnecting = false;
+    const connectionLifetime = new AbortController();
     let isClosing = false;
     let assistantId = 'aria-acme-dental';
 
     const cleanup = () => {
       if (isClosing) return;
       isClosing = true;
+      connectionLifetime.abort();
       if (liveSession) {
         try {
           liveSession.close();
@@ -63,7 +83,7 @@ export function attachLiveWebSocketServer(wss: WebSocketServer): void {
       }
 
       if (msg.type === 'start') {
-        if (liveSession) return;
+        if (liveSession || isConnecting || isClosing) return;
         assistantId = msg.assistantId || 'aria-acme-dental';
         const store = getStore();
         const assistant =
@@ -81,186 +101,153 @@ export function attachLiveWebSocketServer(wss: WebSocketServer): void {
           ? `${baseInstruction}\n\nNote: When the call connects after ringing, you have already greeted the caller with: "${assistant.firstMessage}". Wait for the caller to speak and assist them directly.`
           : `${baseInstruction}\n\nNote: Greeting first is DISABLED for this call. Do NOT speak first when the call connects; wait silently until the caller speaks, then respond naturally.`;
 
-        let ai;
+        isConnecting = true;
         try {
-          ai = getGeminiBetaClient();
-        } catch (err) {
-          sendJson(clientWs, {
-            type: 'error',
-            message: err instanceof Error ? err.message : 'Missing GEMINI_API_KEY',
-          });
-          return;
-        }
+          const { modelUsed } = await withModelFallback(
+            MODEL_CONFIG.LIVE_MODEL,
+            MODEL_CONFIG.LIVE_FALLBACK_MODELS,
+            async (model, ai) => {
+              let accepted = false;
+              const signal = AbortSignal.any([
+                connectionLifetime.signal,
+                AbortSignal.timeout(8_000),
+              ]);
+              const connection = ai.live.connect({
+                model,
+                config: {
+                  responseModalities: [Modality.AUDIO],
+                  speechConfig: {
+                    voiceConfig: {
+                      prebuiltVoiceConfig: { voiceName: assistant.voice || 'Kore' },
+                    },
+                  },
+                  inputAudioTranscription: {},
+                  outputAudioTranscription: {},
+                  systemInstruction: liveInstruction,
+                  tools: [{ functionDeclarations: VOICE_TOOL_DECLARATIONS }],
+                },
+                callbacks: {
+                  onmessage: (message: LiveServerMessage) => {
+                    if (!accepted || isClosing) return;
+                    recordGeminiUsage(ai, message.usageMetadata?.totalTokenCount);
+                    const content = message.serverContent;
 
-        const candidates = [
-          MODEL_CONFIG.LIVE_MODEL,
-          ...MODEL_CONFIG.LIVE_FALLBACK_MODELS,
-        ].filter((m, idx, arr) => Boolean(m) && arr.indexOf(m) === idx);
+                    if (content?.interrupted) {
+                      sendJson(clientWs, { type: 'interrupted' });
+                    }
 
-        let connectedModel = candidates[0];
-        let lastErr: unknown = null;
+                    if (content?.inputTranscription?.text) {
+                      sendJson(clientWs, {
+                        type: 'inputTranscript',
+                        text: content.inputTranscription.text,
+                      });
+                    }
 
-        for (const model of candidates) {
-          try {
-            let opened = false;
-            const session = await ai.live.connect({
-              model,
-              config: {
-                responseModalities: [Modality.AUDIO],
-                speechConfig: {
-                  voiceConfig: {
-                    prebuiltVoiceConfig: { voiceName: assistant.voice || 'Kore' },
+                    if (content?.outputTranscription?.text) {
+                      sendJson(clientWs, {
+                        type: 'outputTranscript',
+                        text: content.outputTranscription.text,
+                      });
+                    }
+
+                    for (const part of content?.modelTurn?.parts ?? []) {
+                      if (part.inlineData?.data) {
+                        sendJson(clientWs, {
+                          type: 'audio',
+                          data: part.inlineData.data,
+                        });
+                      }
+                    }
+
+                    if (content?.turnComplete) {
+                      sendJson(clientWs, { type: 'turnComplete' });
+                    }
+
+                    const calls = message.toolCall?.functionCalls;
+                    if (calls && calls.length > 0 && liveSession) {
+                      const functionResponses = calls.map((call) => {
+                        const args = (call.args ?? {}) as Record<string, unknown>;
+                        let toolResult: Record<string, unknown> = { ok: true };
+
+                        if (call.name === 'book_appointment') {
+                          const appointment: Appointment = {
+                            id: `appt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                            assistantId: assistant.id,
+                            name: String(args.name ?? 'Caller'),
+                            phone: String(args.phone ?? 'Not provided'),
+                            datetime: String(args.datetime ?? 'Requested time'),
+                            createdAt: new Date().toISOString(),
+                          };
+                          const s = getStore();
+                          s.appointments.unshift(appointment);
+                          saveStore();
+                          toolResult = { status: 'confirmed', appointment };
+                        } else if (call.name === 'transfer_to_human') {
+                          toolResult = {
+                            status: 'transferring',
+                            department: String(args.department ?? 'Front Desk'),
+                          };
+                        } else if (call.name === 'end_call') {
+                          toolResult = {
+                            status: 'ending_call',
+                            reason: String(args.reason ?? 'Conversation complete'),
+                          };
+                        }
+
+                        sendJson(clientWs, {
+                          type: 'tool',
+                          name: call.name,
+                          args,
+                          result: toolResult,
+                        });
+
+                        return {
+                          id: call.id,
+                          name: call.name,
+                          response: toolResult,
+                        };
+                      });
+
+                      try {
+                        liveSession.sendToolResponse({ functionResponses });
+                      } catch (err) {
+                        console.error('Failed to send Live tool response:', err);
+                      }
+                    }
+                  },
+                  onerror: (err) => {
+                    if (!accepted || isClosing) return;
+                    markGeminiClientUnavailable(ai, new Error(err?.message || 'WebSocket error'));
+                    sendJson(clientWs, {
+                      type: 'error',
+                      message: err?.message || 'Fedora Pilot connection error',
+                    });
+                  },
+                  onclose: (ev) => {
+                    if (!accepted || isClosing) return;
+                    liveSession = null;
+                    const code = ev?.code || 1000;
+                    const reason = ev?.reason || '';
+                    markGeminiClientUnavailable(ai, new Error(`WebSocket closed with code ${code}: ${reason}`));
+                    sendJson(clientWs, { type: 'closed', reason, code });
                   },
                 },
-                inputAudioTranscription: {},
-                outputAudioTranscription: {},
-                systemInstruction: liveInstruction,
-                tools: [{ functionDeclarations: VOICE_TOOL_DECLARATIONS }],
-              },
-              callbacks: {
-                onopen: () => {
-                  opened = true;
-                  if (liveSession) {
-                    sendJson(clientWs, {
-                      type: 'ready',
-                      model,
-                      chunksLoaded: kb.chunks.length,
-                    });
-                  }
-                },
-                onmessage: (message: LiveServerMessage) => {
-                  recordGeminiUsage(ai, message.usageMetadata?.totalTokenCount);
-                  if (isClosing) return;
-                  const content = message.serverContent;
-
-                  if (content?.interrupted) {
-                    sendJson(clientWs, { type: 'interrupted' });
-                  }
-
-                  if (content?.inputTranscription?.text) {
-                    sendJson(clientWs, {
-                      type: 'inputTranscript',
-                      text: content.inputTranscription.text,
-                    });
-                  }
-
-                  if (content?.outputTranscription?.text) {
-                    sendJson(clientWs, {
-                      type: 'outputTranscript',
-                      text: content.outputTranscription.text,
-                    });
-                  }
-
-                  for (const part of content?.modelTurn?.parts ?? []) {
-                    if (part.inlineData?.data) {
-                      sendJson(clientWs, {
-                        type: 'audio',
-                        data: part.inlineData.data,
-                      });
-                    }
-                  }
-
-                  if (content?.turnComplete) {
-                    sendJson(clientWs, { type: 'turnComplete' });
-                  }
-
-                  const calls = message.toolCall?.functionCalls;
-                  if (calls && calls.length > 0 && liveSession) {
-                    const functionResponses = calls.map((call) => {
-                      const args = (call.args ?? {}) as Record<string, unknown>;
-                      let toolResult: Record<string, unknown> = { ok: true };
-
-                      if (call.name === 'book_appointment') {
-                        const appointment: Appointment = {
-                          id: `appt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-                          assistantId: assistant.id,
-                          name: String(args.name ?? 'Caller'),
-                          phone: String(args.phone ?? 'Not provided'),
-                          datetime: String(args.datetime ?? 'Requested time'),
-                          createdAt: new Date().toISOString(),
-                        };
-                        const s = getStore();
-                        s.appointments.unshift(appointment);
-                        saveStore();
-                        toolResult = { status: 'confirmed', appointment };
-                      } else if (call.name === 'transfer_to_human') {
-                        toolResult = {
-                          status: 'transferring',
-                          department: String(args.department ?? 'Front Desk'),
-                        };
-                      } else if (call.name === 'end_call') {
-                        toolResult = {
-                          status: 'ending_call',
-                          reason: String(args.reason ?? 'Conversation complete'),
-                        };
-                      }
-
-                      sendJson(clientWs, {
-                        type: 'tool',
-                        name: call.name,
-                        args,
-                        result: toolResult,
-                      });
-
-                      return {
-                        id: call.id,
-                        name: call.name,
-                        response: toolResult,
-                      };
-                    });
-
-                    try {
-                      liveSession.sendToolResponse({ functionResponses });
-                    } catch (err) {
-                      console.error('Failed to send Live tool response:', err);
-                    }
-                  }
-                },
-                onerror: (err) => {
-                  console.error('Fedora Pilot error:', err);
-                  sendJson(clientWs, {
-                    type: 'error',
-                    message: err?.message || 'Fedora Pilot connection error',
-                  });
-                },
-                onclose: (ev) => {
-                  if (!isClosing) {
-                    sendJson(clientWs, {
-                      type: 'closed',
-                      reason: ev?.reason || '',
-                      code: ev?.code || 1000,
-                    });
-                  }
-                },
-              },
-            });
-            liveSession = session;
-            connectedModel = model;
-            if (opened) {
-              sendJson(clientWs, {
-                type: 'ready',
-                model: connectedModel,
-                chunksLoaded: kb.chunks.length,
               });
-            }
-            break;
-          } catch (err) {
-            lastErr = err;
-            console.error(`Fedora Pilot connect failed for ${model}:`, err);
-            if (!isModelNotFoundError(err)) {
-              break;
-            }
+              liveSession = await waitForLiveSession(connection, signal);
+              accepted = true;
+            },
+            { apiVersion: 'v1beta', signal: connectionLifetime.signal },
+          );
+          sendJson(clientWs, { type: 'ready', model: modelUsed, chunksLoaded: kb.chunks.length });
+        } catch (err) {
+          if (!isClosing) {
+            sendJson(clientWs, {
+              type: 'error',
+              message: err instanceof Error ? err.message : 'Unable to establish Fedora Pilot session.',
+            });
           }
-        }
-
-        if (!liveSession) {
-          sendJson(clientWs, {
-            type: 'error',
-            message:
-              lastErr instanceof Error
-                ? lastErr.message
-                : 'Unable to establish Fedora Pilot session.',
-          });
+        } finally {
+          isConnecting = false;
         }
         return;
       }

@@ -9,13 +9,12 @@ import { createServer as createViteServer } from 'vite';
 import { WebSocketServer } from 'ws';
 import { MODEL_CONFIG } from './server/config/models.ts';
 import {
-  getGeminiBetaClient,
-  getGeminiClient,
   getGeminiSettings,
   getStatusCode,
   recordGeminiUsage,
   trackGeminiStream,
   updateGeminiApiKey,
+  withGeminiKey,
   withModelFallback,
 } from './server/services/gemini.ts';
 import {
@@ -464,7 +463,6 @@ async function startServer() {
         },
       ];
 
-      const ai = getGeminiClient();
       const llmStart = performance.now();
       let ttftMs: number | null = null;
       let fullText = '';
@@ -475,104 +473,91 @@ async function startServer() {
           ...MODEL_CONFIG.LLM_FALLBACK_MODELS,
         ].filter((m, idx, arr) => Boolean(m) && arr.indexOf(m) === idx);
 
-        let lastTurnErr: unknown = null;
-        const attemptErrors: string[] = [];
-
-        for (let idx = 0; idx < candidates.length; idx++) {
-          const model = candidates[idx];
-          if (controller.signal.aborted) {
-            throw new DOMException('Aborted', 'AbortError');
-          }
-
-          const attemptController = new AbortController();
-          const forwardAbort = () => attemptController.abort();
-          controller.signal.addEventListener('abort', forwardAbort, { once: true });
-
-          // Guard against stalled streams before first token/tool arrives
+        let lastError: unknown;
+        for (const model of candidates) {
           let receivedFirstChunk = false;
-          const firstChunkTimer = setTimeout(() => {
-            if (!receivedFirstChunk) {
-              attemptController.abort();
-            }
-          }, 8000);
-
           try {
-            const isGemini4 = model.startsWith('gemini-4');
-            const stream = await ai.models.generateContentStream({
-              model,
-              contents: turnContents,
-              config: {
-                abortSignal: attemptController.signal,
-                systemInstruction,
-                tools: [{ functionDeclarations: VOICE_TOOL_DECLARATIONS }],
-                ...(isGemini4
-                  ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
-                  : { temperature: assistant.temperature }),
-              },
-            });
+            return await withGeminiKey(async (ai) => {
+              const attemptController = new AbortController();
+              const forwardAbort = () => attemptController.abort();
+              controller.signal.addEventListener('abort', forwardAbort, { once: true });
 
-            const pendingCalls: Array<{
-              id?: string;
-              name?: string;
-              args?: Record<string, unknown>;
-            }> = [];
-            const modelParts: Part[] = [];
+              // Guard against stalled streams before first token/tool arrives
+              receivedFirstChunk = false;
+              const firstChunkTimer = setTimeout(() => attemptController.abort(), 8000);
 
-            for await (const chunk of trackGeminiStream(ai, stream)) {
-              if (!receivedFirstChunk) {
-                receivedFirstChunk = true;
+              try {
+                const isGemini4 = model.startsWith('gemini-4');
+                const stream = await ai.models.generateContentStream({
+                  model,
+                  contents: turnContents,
+                  config: {
+                    abortSignal: attemptController.signal,
+                    systemInstruction,
+                    tools: [{ functionDeclarations: VOICE_TOOL_DECLARATIONS }],
+                    ...(isGemini4
+                      ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+                      : { temperature: assistant.temperature }),
+                  },
+                });
+
+                const pendingCalls: Array<{
+                  id?: string;
+                  name?: string;
+                  args?: Record<string, unknown>;
+                }> = [];
+                const modelParts: Part[] = [];
+
+                for await (const chunk of trackGeminiStream(ai, stream)) {
+                  if (!receivedFirstChunk && chunk.candidates?.length) {
+                    receivedFirstChunk = true;
+                    clearTimeout(firstChunkTimer);
+                  }
+                  if (controller.signal.aborted) break;
+
+                  const parts = chunk.candidates?.[0]?.content?.parts ?? [];
+                  for (const p of parts) {
+                    modelParts.push(p);
+                  }
+
+                  if (chunk.functionCalls && chunk.functionCalls.length > 0) {
+                    for (const fc of chunk.functionCalls) {
+                      pendingCalls.push({
+                        id: fc.id,
+                        name: fc.name,
+                        args: (fc.args ?? {}) as Record<string, unknown>,
+                      });
+                    }
+                  }
+
+                  const delta = chunk.text;
+                  if (delta) {
+                    if (ttftMs === null) {
+                      ttftMs = Math.max(1, Math.round(performance.now() - llmStart));
+                    }
+                    fullText += delta;
+                    writeEvent('token', { text: delta, ttftMs, modelUsed: model });
+                  }
+                }
+
+                if (!receivedFirstChunk && !controller.signal.aborted) {
+                  throw new DOMException('Gemini returned an empty stream.', 'TimeoutError');
+                }
+                return { pendingCalls, modelParts, modelUsed: model };
+              } finally {
                 clearTimeout(firstChunkTimer);
+                controller.signal.removeEventListener('abort', forwardAbort);
               }
-              if (controller.signal.aborted) break;
-
-              const parts = chunk.candidates?.[0]?.content?.parts ?? [];
-              for (const p of parts) {
-                modelParts.push(p);
-              }
-
-              if (chunk.functionCalls && chunk.functionCalls.length > 0) {
-                for (const fc of chunk.functionCalls) {
-                  pendingCalls.push({
-                    id: fc.id,
-                    name: fc.name,
-                    args: (fc.args ?? {}) as Record<string, unknown>,
-                  });
-                }
-              }
-
-              const delta = chunk.text;
-              if (delta) {
-                if (ttftMs === null) {
-                  ttftMs = Math.max(1, Math.round(performance.now() - llmStart));
-                }
-                fullText += delta;
-                writeEvent('token', { text: delta, ttftMs, modelUsed: model });
-              }
-            }
-
-            clearTimeout(firstChunkTimer);
-            controller.signal.removeEventListener('abort', forwardAbort);
-            return { pendingCalls, modelParts, modelUsed: model };
-          } catch (err) {
-            clearTimeout(firstChunkTimer);
-            controller.signal.removeEventListener('abort', forwardAbort);
-            if (controller.signal.aborted) {
-              throw err;
-            }
-            const errDesc =
-              err instanceof Error ? `${err.name}: ${err.message}` : String(err);
-            attemptErrors.push(`${model} -> ${errDesc}`);
-            lastTurnErr = err;
-            const hasMore = idx < candidates.length - 1;
-            if (hasMore && !receivedFirstChunk) {
-              console.warn(`LLM stream attempt failed/stalled on ${model}, falling back:`, errDesc);
-              continue;
-            }
-            throw new Error(`LLM failed (${attemptErrors.join(' | ')})`);
+            }, {
+              signal: controller.signal,
+              canRetry: () => !receivedFirstChunk,
+            });
+          } catch (error) {
+            if (controller.signal.aborted || receivedFirstChunk) throw error;
+            lastError = error;
           }
         }
-
-        throw lastTurnErr ?? new Error(`All LLM models failed (${attemptErrors.join(' | ')})`);
+        throw lastError ?? new Error('No chat model is configured.');
       };
 
       const firstPass = await runStreamTurn(contents);
@@ -678,14 +663,13 @@ async function startServer() {
         return;
       }
 
-      const ai = getGeminiBetaClient();
       const ttsStart = performance.now();
       let ttfaMs: number | null = null;
 
       const { result: pcmBuffer, modelUsed } = await withModelFallback(
         MODEL_CONFIG.TTS_MODEL,
         MODEL_CONFIG.TTS_FALLBACK_MODELS,
-        async (model) => {
+        async (model, ai) => {
           const is38 = model.includes('3.8');
           const styledText =
             !is38 && styleInstruction?.trim()
@@ -704,6 +688,7 @@ async function startServer() {
             model,
             contents: [{ role: 'user', parts: [partPayload] }],
             config: {
+              abortSignal: controller.signal,
               responseModalities: ['AUDIO'],
               speechConfig: {
                 voiceConfig: {
@@ -743,7 +728,7 @@ async function startServer() {
           }
           return combined;
         },
-        { signal: controller.signal }
+        { signal: controller.signal, apiVersion: 'v1beta' }
       );
 
       res.json({
@@ -782,12 +767,11 @@ async function startServer() {
         ? 'Transcribe the spoken speech accurately in Nepali using Devanagari script (नेपाली). If the speaker mixes English words or Romanized terms, transcribe naturally in Devanagari नेपाली while keeping names and numbers clear. Return ONLY the spoken words with no commentary or quotes. If there is only silence or background noise, return an empty string.'
         : `Transcribe the spoken speech accurately in ${language || 'en-US'}. Return ONLY the spoken words with no commentary or quotes. If there is only silence or background noise, return an empty string.`;
 
-      const ai = getGeminiClient();
       const { result } = await withModelFallback(
         MODEL_CONFIG.TRANSCRIBE_MODEL,
         MODEL_CONFIG.TRANSCRIBE_FALLBACK_MODELS,
-        async (model) => {
-          return ai.models.generateContent({
+        async (model, ai) => {
+          const result = await ai.models.generateContent({
             model,
             contents: {
               parts: [
@@ -803,10 +787,11 @@ async function startServer() {
               ],
             },
           });
+          recordGeminiUsage(ai, result.usageMetadata?.totalTokenCount);
+          return result;
         }
       );
 
-      recordGeminiUsage(ai, result.usageMetadata?.totalTokenCount);
       res.json({ text: (result.text ?? '').trim() });
     } catch (err) {
       sendErrorResponse(res, err, 'Audio transcription failed.');
@@ -839,13 +824,12 @@ async function startServer() {
 
       if (spokenTranscript.trim().length > 0) {
         try {
-          const ai = getGeminiClient();
           const { result } = await withModelFallback(
             MODEL_CONFIG.LLM_MODEL,
             MODEL_CONFIG.LLM_FALLBACK_MODELS,
-            async (model) => {
+            async (model, ai) => {
               const isGemini4 = model.startsWith('gemini-4');
-              return ai.models.generateContent({
+              const result = await ai.models.generateContent({
                 model,
                 contents: `Analyze this phone call transcript (which may be in Nepali/Devanagari or English) and produce a concise 1-2 sentence factual summary in clear English (or matching the call language if appropriate) and a short outcome label.\n\nTranscript:\n${spokenTranscript}`,
                 config: {
@@ -870,10 +854,11 @@ async function startServer() {
                     : {}),
                 },
               });
+              recordGeminiUsage(ai, result.usageMetadata?.totalTokenCount);
+              return result;
             }
           );
 
-          recordGeminiUsage(ai, result.usageMetadata?.totalTokenCount);
           const parsed = JSON.parse((result.text ?? '{}').trim()) as {
             summary?: string;
             outcome?: string;

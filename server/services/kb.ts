@@ -1,7 +1,7 @@
 import { PDFParse } from 'pdf-parse';
 import { MODEL_CONFIG } from '../config/models.ts';
 import type { KnowledgeChunk, KnowledgeDocument, SearchChunkResult } from '../../src/types.ts';
-import { getGeminiClient, recordGeminiUsage, withModelFallback } from './gemini.ts';
+import { recordGeminiUsage, withModelFallback } from './gemini.ts';
 import { chunkText, estimateTokens, getStore, saveStore } from './store.ts';
 
 export async function extractTextFromUpload(params: {
@@ -42,7 +42,6 @@ export async function extractTextFromUpload(params: {
 
 export async function embedTexts(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return [];
-  const ai = getGeminiClient();
 
   // Batch up to 32 chunks at a time for reliability
   const vectors: number[][] = [];
@@ -52,14 +51,15 @@ export async function embedTexts(texts: string[]): Promise<number[][]> {
     const { result } = await withModelFallback(
       MODEL_CONFIG.EMBED_MODEL,
       MODEL_CONFIG.EMBED_FALLBACK_MODELS,
-      async (model) => {
-        return ai.models.embedContent({
+      async (model, ai) => {
+        const response = await ai.models.embedContent({
           model,
           contents: batch,
         });
+        recordGeminiUsage(ai, response.usageMetadata?.totalTokenCount);
+        return response;
       }
     );
-    recordGeminiUsage(ai, result.usageMetadata?.totalTokenCount);
     const embeddings = result.embeddings ?? [];
     for (const emb of embeddings) {
       vectors.push(emb.values ?? []);

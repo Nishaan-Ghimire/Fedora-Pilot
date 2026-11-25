@@ -41,6 +41,10 @@ Users can configure voice assistants, upload and embed company knowledge, place 
 
 ## Dashboard API key settings
 
+On Render, set `GEMINI_API_KEY_1` through `GEMINI_API_KEY_5` to enable automatic failover. The server tries available keys in numeric order and skips a failed key for 60 seconds when it hits an authentication, quota, or temporary provider error. The dashboard key, when saved, is tried first. The legacy `GEMINI_API_KEY` is tried last. Automatic failover works independently of the dashboard password.
+
+New realtime calls can switch keys during connection setup. If a connected call drops, start a new call to reconnect. The token counter includes reported usage across all keys.
+
 Set `DASHBOARD_SETTINGS_PASSWORD` in your Render service's Environment settings, or in `.env` for local development. Open **Settings** in the app to enter a new Gemini API key and the settings password. New requests and calls use the saved key. Select **Reset token count when saving** to start the server's reported usage counter at zero. The counter also starts at zero on server restart.
 
 Gemini rate limits are shared by keys from the same Google project. To switch quotas, use a key from a project with available quota. [Gemini API rate limits](https://aistudio.google.com/docs/rate-limits)

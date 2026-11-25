@@ -10,23 +10,28 @@ try {
 } catch (error) {
   if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
 }
-let cachedClient: GoogleGenAI | null = null;
-let cachedBetaClient: GoogleGenAI | null = null;
-const clientUsageEpochs = new WeakMap<GoogleGenAI, number>();
+const clients = new Map<string, Map<string | undefined, GoogleGenAI>>();
+const clientCredentials = new WeakMap<GoogleGenAI, { key: string; usageEpoch: number }>();
+const unavailableUntil = new Map<string, number>();
+const KEY_COOLDOWN_MS = 60_000;
+const KEY_FAILURE = /API_KEY_(?:INVALID|EXPIRED|REVOKED)|(?:api[ _-]?key|credential).{0,60}(?:invalid|expired|revoked|not valid|blocked)/i;
+const TRANSIENT_FAILURE = /rate limit|resource[_ ](?:has been )?exhausted|quota|fetch failed|econnreset|etimedout|websocket error|code (?:1006|1011|1013)\b|unexpected server response: (?:401|402|403|408|429|5\d\d)\b/i;
 let usageEpoch = 0;
 let totalTokens = 0;
 
-function activeApiKey(): string | undefined {
-  const apiKey = dashboardApiKey || process.env.GEMINI_API_KEY?.trim();
-  return apiKey === 'MY_GEMINI_API_KEY' ? undefined : apiKey;
+function configuredKeys(): string[] {
+  const numberedKeys = Array.from({ length: 5 }, (_, i) =>
+    process.env[`GEMINI_API_KEY_${i + 1}`]?.trim()
+  );
+  return [...new Set([dashboardApiKey, ...numberedKeys, process.env.GEMINI_API_KEY?.trim()])]
+    .filter((key): key is string => Boolean(key) && key !== 'MY_GEMINI_API_KEY');
 }
 
 export function getGeminiSettings() {
-  return { hasApiKey: Boolean(activeApiKey()), totalTokens };
+  return { hasApiKey: configuredKeys().length > 0, totalTokens };
 }
 
 export function updateGeminiApiKey(apiKey: string, resetTokens: boolean): void {
-  const keyChanged = apiKey !== activeApiKey();
   if (apiKey !== dashboardApiKey) {
     const temporaryPath = `${keyPath}.${randomUUID()}.tmp`;
     fs.mkdirSync(path.dirname(keyPath), { recursive: true });
@@ -36,20 +41,22 @@ export function updateGeminiApiKey(apiKey: string, resetTokens: boolean): void {
     } finally {
       fs.rmSync(temporaryPath, { force: true });
     }
+    if (dashboardApiKey) {
+      clients.delete(dashboardApiKey);
+      unavailableUntil.delete(dashboardApiKey);
+    }
     dashboardApiKey = apiKey;
+    unavailableUntil.delete(apiKey);
   }
   if (resetTokens) {
     totalTokens = 0;
     usageEpoch++;
-  }
-  if (keyChanged || resetTokens) {
-    cachedClient = null;
-    cachedBetaClient = null;
+    clients.clear();
   }
 }
 
 export function recordGeminiUsage(client: GoogleGenAI, tokens?: number): void {
-  if (clientUsageEpochs.get(client) === usageEpoch && tokens && tokens > 0) {
+  if (clientCredentials.get(client)?.usageEpoch === usageEpoch && tokens && tokens > 0) {
     totalTokens += tokens;
   }
 }
@@ -69,26 +76,71 @@ export async function* trackGeminiStream(
   }
 }
 
-function createGeminiClient(apiVersion?: string): GoogleGenAI {
-  const apiKey = activeApiKey();
-  if (!apiKey) {
-    throw new Error('Set a Gemini API key in Settings or configure GEMINI_API_KEY on the server.');
+function getClient(key: string, apiVersion?: string): GoogleGenAI {
+  let versions = clients.get(key);
+  if (!versions) {
+    versions = new Map();
+    clients.set(key, versions);
   }
-  const client = new GoogleGenAI({
-    apiKey,
-    apiVersion,
-    httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
-  });
-  clientUsageEpochs.set(client, usageEpoch);
+  let client = versions.get(apiVersion);
+  if (!client) {
+    client = new GoogleGenAI({
+      apiKey: key,
+      apiVersion,
+      httpOptions: {
+        headers: { 'User-Agent': 'aistudio-build' },
+        timeout: 20_000,
+        retryOptions: { attempts: 1 },
+      },
+    });
+    versions.set(apiVersion, client);
+    clientCredentials.set(client, { key, usageEpoch });
+  }
   return client;
 }
 
-export function getGeminiClient(): GoogleGenAI {
-  return (cachedClient ??= createGeminiClient());
+export function markGeminiClientUnavailable(client: GoogleGenAI, error: unknown): boolean {
+  if (!shouldSwitchKey(error)) return false;
+  const credentials = clientCredentials.get(client);
+  if (credentials && configuredKeys().includes(credentials.key)) {
+    unavailableUntil.set(credentials.key, Date.now() + KEY_COOLDOWN_MS);
+  }
+  return true;
 }
 
-export function getGeminiBetaClient(): GoogleGenAI {
-  return (cachedBetaClient ??= createGeminiClient('v1beta'));
+type FailoverOptions = {
+  signal?: AbortSignal;
+  apiVersion?: 'v1beta';
+  canRetry?: () => boolean;
+};
+
+export async function withGeminiKey<T>(
+  run: (client: GoogleGenAI) => Promise<T>,
+  { signal, apiVersion, canRetry }: FailoverOptions = {}
+): Promise<T> {
+  signal?.throwIfAborted();
+  const keys = configuredKeys();
+  if (keys.length === 0) {
+    throw new Error('Set a Gemini API key in Settings or configure GEMINI_API_KEY_1 on the server.');
+  }
+  let lastError: unknown;
+  for (const key of keys) {
+    signal?.throwIfAborted();
+    if ((unavailableUntil.get(key) ?? 0) > Date.now()) continue;
+    const client = getClient(key, apiVersion);
+    try {
+      return await run(client);
+    } catch (error) {
+      if (signal?.aborted || !markGeminiClientUnavailable(client, error) || canRetry?.() === false) {
+        throw error;
+      }
+      lastError = error;
+    }
+  }
+  throw lastError ?? Object.assign(
+    new Error('Gemini API keys are temporarily unavailable. Try again shortly.'),
+    { status: 503 }
+  );
 }
 
 export function getStatusCode(err: unknown): number | undefined {
@@ -103,17 +155,15 @@ export function getStatusCode(err: unknown): number | undefined {
   return undefined;
 }
 
-export function isRetryableError(err: unknown): boolean {
-  const code = getStatusCode(err);
-  if (code === 429 || code === 503 || code === 502 || code === 504) return true;
-  const msg = String((err as Error)?.message ?? '').toLowerCase();
-  return (
-    msg.includes('rate limit') ||
-    msg.includes('resource_exhausted') ||
-    msg.includes('temporarily unavailable') ||
-    msg.includes('econnreset') ||
-    msg.includes('etimedout')
-  );
+function shouldSwitchKey(error: unknown): boolean {
+  const status = getStatusCode(error);
+  const name = (error as Error)?.name;
+  const message = String((error as Error)?.message ?? '');
+  if (status === 400) return KEY_FAILURE.test(message);
+  return status === 401 || status === 402 || status === 403 || status === 408 ||
+    status === 429 || (status !== undefined && status >= 500 && status <= 599) ||
+    name === 'TimeoutError' || name === 'AbortError' ||
+    KEY_FAILURE.test(message) || TRANSIENT_FAILURE.test(message);
 }
 
 export function isModelNotFoundError(err: unknown): boolean {
@@ -123,58 +173,6 @@ export function isModelNotFoundError(err: unknown): boolean {
   return msg.includes('not found') || msg.includes('not supported') || msg.includes('invalid model');
 }
 
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new DOMException('Aborted', 'AbortError'));
-      return;
-    }
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(new DOMException('Aborted', 'AbortError'));
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
-}
-
-/**
- * Retry wrapper with exponential backoff + jitter for 429/503 responses.
- */
-export async function withRetry<T>(
-  fn: () => Promise<T>,
-  options: { maxRetries?: number; baseDelayMs?: number; signal?: AbortSignal } = {}
-): Promise<T> {
-  const maxRetries = options.maxRetries ?? 3;
-  const baseDelayMs = options.baseDelayMs ?? 450;
-
-  let lastError: unknown;
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    if (options.signal?.aborted) {
-      throw new DOMException('Aborted', 'AbortError');
-    }
-    try {
-      return await fn();
-    } catch (err) {
-      lastError = err;
-      if ((err as Error)?.name === 'AbortError' || options.signal?.aborted) {
-        throw err;
-      }
-      if (attempt < maxRetries && isRetryableError(err)) {
-        const jitter = Math.floor(Math.random() * 150);
-        const delay = baseDelayMs * Math.pow(2, attempt) + jitter;
-        await sleep(delay, options.signal);
-        continue;
-      }
-      throw err;
-    }
-  }
-  throw lastError;
-}
-
 /**
  * Attempts a Gemini operation with the primary model and automatically falls back
  * across fallbackModels when the model returns 404 / unsupported.
@@ -182,8 +180,8 @@ export async function withRetry<T>(
 export async function withModelFallback<T>(
   primaryModel: string,
   fallbackModels: readonly string[],
-  run: (model: string) => Promise<T>,
-  options: { signal?: AbortSignal } = {}
+  run: (model: string, client: GoogleGenAI) => Promise<T>,
+  options: FailoverOptions = {}
 ): Promise<{ result: T; modelUsed: string }> {
   const candidates = [primaryModel, ...fallbackModels].filter(
     (m, i, arr) => Boolean(m) && arr.indexOf(m) === i
@@ -193,7 +191,7 @@ export async function withModelFallback<T>(
   for (let i = 0; i < candidates.length; i++) {
     const model = candidates[i];
     try {
-      const result = await withRetry(() => run(model), { signal: options.signal });
+      const result = await withGeminiKey((client) => run(model, client), options);
       return { result, modelUsed: model };
     } catch (err) {
       lastError = err;
